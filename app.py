@@ -5,10 +5,12 @@ import json
 
 app = Flask(__name__)
 
+# 🔐 Configuration
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 HELIUS_API_KEY = "c8903a79-6e7a-458a-ad88-0a821d92d16d"
 HELIUS_WEBHOOK_URL = "https://halocryptowallet-production.up.railway.app/webhook"
+HELIUS_WEBHOOK_ID = "87cac7d7-60e0-4667-9a62-81fe6b8eb102"
 
 MIN_SOL_THRESHOLD = 0.01
 LABELS_FILE = "wallet_labels.json"
@@ -71,29 +73,25 @@ def send_telegram(message):
 # ---------------------------
 def update_helius_webhook():
     try:
-        webhook_id_url = f"https://api.helius.xyz/v0/webhooks?api-key={HELIUS_API_KEY}"
-        res = requests.get(webhook_id_url)
-        webhooks = res.json()
-        my_webhook = next((w for w in webhooks if w["webhookURL"] == HELIUS_WEBHOOK_URL), None)
-
-        if not my_webhook:
-            print("❌ Could not find Helius webhook ID.")
-            return
-
-        webhook_id = my_webhook["webhookID"]
-        update_url = f"https://api.helius.xyz/v0/webhooks/{webhook_id}?api-key={HELIUS_API_KEY}"
+        update_url = f"https://api.helius.xyz/v0/webhooks/{HELIUS_WEBHOOK_ID}?api-key={HELIUS_API_KEY}"
         payload = {
             "webhookURL": HELIUS_WEBHOOK_URL,
             "transactionTypes": ["ALL"],
             "accountAddresses": list(tracked_wallets.keys())
         }
         res = requests.put(update_url, json=payload)
-        print(f"🔄 Synced webhook with Helius: {res.status_code}")
+        print(f"🔄 Helius webhook updated: {res.status_code}")
+        print(f"📦 Response: {res.text}")
+        if res.status_code == 200:
+            send_telegram("✅ Helius synced with tracked wallets!")
+        else:
+            send_telegram(f"⚠️ Helius sync failed: {res.text}")
     except Exception as e:
-        print(f"❌ Error updating Helius: {e}")
+        print(f"❌ Error syncing with Helius: {e}")
+        send_telegram(f"❌ Error syncing with Helius: {e}")
 
 # ---------------------------
-# TELEGRAM ROUTE
+# Telegram Commands
 # ---------------------------
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_commands():
@@ -162,7 +160,7 @@ def telegram_commands():
     return "OK", 200
 
 # ---------------------------
-# WEBHOOK ENDPOINT
+# Webhook Alerts
 # ---------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -220,7 +218,7 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "🟢 HaloBot with Helius syncing + Telegram wallet tracking is live!", 200
+    return "🟢 HaloBot fully synced with Telegram + Helius", 200
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8080)
