@@ -8,7 +8,6 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Known wallet labels
 known_wallets = {
     "4EtAJ1p8RjqccEVhEhaYnEgQ6kA4JHR8oYqyLFwARUj6": "TRUMP Whale #1",
     "HWdeCUjBvPP1HJ5oCJt7aNsvMWpWoDgiejUWvfFX6T7R": "Gaming Giant",
@@ -54,8 +53,7 @@ def get_wallet_balance(address):
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    response = requests.post(url, json=data)
-    print("Telegram response:", response.status_code, response.text)
+    requests.post(url, json=data)
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -80,10 +78,17 @@ def webhook():
 
         # Wallet balance
         balance_sol = get_wallet_balance(wallet)
-        balance_usd = f"${balance_sol * sol_price:,.2f}" if balance_sol and sol_price else "N/A"
+        if balance_sol is not None and sol_price:
+            balance_usd = f"${balance_sol * sol_price:,.2f}"
+            balance_fmt = f"{balance_sol:.2f}"
+        else:
+            balance_usd = "?"
+            balance_fmt = "?"
+
+        # Spent USD
         spent_usd = f"${sol_spent * sol_price:,.2f}" if sol_price else "?"
 
-        # Token info via Dexscreener
+        # Token info
         token_name, symbol, token_price, liquidity = get_token_info(token_address)
         price_info = f"${token_price:,.4f}" if token_price else "?"
         liquidity_info = f"${liquidity:,.0f}" if liquidity else "?"
@@ -93,7 +98,7 @@ def webhook():
             f"*Wallet:* {label}\n"
             f"*Tx Type:* {tx_type}\n"
             f"*Spent:* {sol_spent:.4f} SOL ({spent_usd})\n"
-            f"*Wallet Balance:* {balance_sol:.2f} SOL ({balance_usd})\n"
+            f"*Wallet Balance:* {balance_fmt} SOL ({balance_usd})\n"
             f"*Token:* ${symbol or '?'} ({token_name or 'Unknown'})\n"
             f"*Token Address:* `{token_address}`\n"
             f"*Price:* {price_info} | Liquidity: {liquidity_info}\n"
@@ -106,7 +111,7 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "HaloWebhook powered fully by Dexscreener is live!", 200
+    return "HaloWebhook powered by Dexscreener is live!", 200
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8080)
