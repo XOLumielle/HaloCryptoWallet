@@ -54,44 +54,57 @@ def send_telegram(message):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     txs = request.json
+    print("🚨 Webhook HIT")
+    print(json.dumps(txs, indent=2))
+
     if not txs or not isinstance(txs, list):
+        print("⚠️ Invalid or empty tx list")
         return "Invalid data", 400
 
     sol_price = get_sol_price()
+    print(f"💵 SOL Price (Dexscreener): {sol_price}")
 
     for tx in txs:
         signature = tx.get("signature")
-        if not signature or signature in seen_signatures:
+        if not signature:
+            print("⚠️ Skipping tx with no signature")
+            continue
+
+        if signature in seen_signatures:
+            print(f"⏩ Skipping already seen tx: {signature}")
             continue
 
         solscan_data = get_solscan_tx(signature)
         if not solscan_data:
+            print(f"❌ No Solscan data for tx: {signature}")
             continue
 
         seen_signatures.add(signature)
+        print(f"🔍 Checking tx: {signature}")
 
-        # Native SOL amount transferred
         native_transfer = solscan_data.get("nativeTransfers", [])
         if not native_transfer:
+            print(f"❌ No native SOL transfers in tx: {signature}")
             continue
 
         amount = native_transfer[0].get("amount", 0) / 1_000_000_000
+        print(f"💰 Amount transferred: {amount:.6f} SOL")
         if amount < MIN_SOL_THRESHOLD:
+            print(f"⏩ Skipped tx {signature} (below threshold: {MIN_SOL_THRESHOLD})")
             continue
 
         from_addr = native_transfer[0].get("fromUserAccount", "Unknown")
         to_addr = native_transfer[0].get("toUserAccount", "Unknown")
         usd_value = f"${amount * sol_price:,.2f}" if sol_price else "?"
 
-        # Token info
         token_transfers = solscan_data.get("tokenTransfers", [])
         token_address = token_transfers[0].get("tokenAddress") if token_transfers else None
+
         if token_address:
             token_name, symbol, token_price, liquidity = get_token_info(token_address)
         else:
             token_name = symbol = token_price = liquidity = None
 
-        # Build message
         if symbol and token_name and token_price:
             token_display = f"${symbol} ({token_name})"
             token_address_display = f"`{token_address}`"
@@ -117,14 +130,14 @@ def webhook():
                 f"[View on Solscan](https://solscan.io/tx/{signature})"
             )
 
-        print(f"📤 Telegram ping for {signature} | Amount: {amount:.4f} SOL")
+        print(f"📤 Sending Telegram alert for tx {signature}")
         send_telegram(msg)
 
     return "OK", 200
 
 @app.route("/", methods=["GET"])
 def home():
-    return "🟢 HaloBot v2 — based on SOL transferred, live and glowing!", 200
+    return "🟢 HaloBot Debug Mode: Logging all tx activity", 200
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8080)
