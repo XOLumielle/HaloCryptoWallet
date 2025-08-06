@@ -8,15 +8,6 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-known_wallets = {
-    "4EtAJ1p8RjqccEVhEhaYnEgQ6kA4JHR8oYqyLFwARUj6": "TRUMP Whale #1",
-    "HWdeCUjBvPP1HJ5oCJt7aNsvMWpWoDgiejUWvfFX6T7R": "Gaming Giant",
-    "fwHknyxZTgFGytVz9VPrvWqipW2V4L4D99gEb831t81": "AI Memecoin Sniper",
-    "9HCTuTPEiQvkUtLmTZvK6uch4E3pDynwJTbNw6jLhp9z": "TRUMP Mega Whale",
-    "6kbwsSY4hL6WVadLRLnWV2irkMN2AvFZVAS8McKJmAtJ": "RIF Winner",
-    "5fWkLJfoDsRAaXhPJcJY19qNtDDQ5h6q1SPzsAPRrUNG": "Multi-Win Whale"
-}
-
 def get_token_info(token_address):
     try:
         url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{token_address}"
@@ -34,7 +25,8 @@ def get_token_info(token_address):
     return None, None, None, None
 
 def get_sol_price():
-    return get_token_info("So11111111111111111111111111111111111111112")[2]
+    _, _, sol_price, _ = get_token_info("So11111111111111111111111111111111111111112")
+    return sol_price
 
 def get_wallet_balance(address):
     try:
@@ -68,40 +60,42 @@ def webhook():
 
     for tx in txs:
         wallet = tx.get("source", "Unknown")
-        label = known_wallets.get(wallet, wallet[:6] + "..." + wallet[-4:])
         signature = tx.get("signature", "")
+        tx_type = tx.get("type", "Transfer")
         sol_spent = float(tx.get("fee", 0)) / 1_000_000_000
 
+        # Get token address if exists
         token_transfers = tx.get("tokenTransfers", [])
-        token_address = token_transfers[0].get("mint", "Unknown") if token_transfers else "Unknown"
-        tx_type = tx.get("type", "Transfer")
+        token_address = token_transfers[0].get("mint", None) if token_transfers else None
+
+        # Token info
+        if token_address:
+            token_name, token_symbol, token_price, liquidity = get_token_info(token_address)
+        else:
+            token_name = token_symbol = token_price = liquidity = None
 
         # Wallet balance
         balance_sol = get_wallet_balance(wallet)
-        if balance_sol is not None and sol_price:
-            balance_usd = f"${balance_sol * sol_price:,.2f}"
-            balance_fmt = f"{balance_sol:.2f}"
-        else:
-            balance_usd = "?"
-            balance_fmt = "?"
 
-        # Spent USD
-        spent_usd = f"${sol_spent * sol_price:,.2f}" if sol_price else "?"
+        # Format fields
+        spent_usd = f"${sol_spent * sol_price:,.2f}" if sol_price else "USD unknown"
+        balance_fmt = f"{balance_sol:.2f}" if balance_sol is not None else "Unknown"
+        balance_usd = f"${balance_sol * sol_price:,.2f}" if sol_price and balance_sol is not None else "?"
 
-        # Token info
-        token_name, symbol, token_price, liquidity = get_token_info(token_address)
-        price_info = f"${token_price:,.4f}" if token_price else "?"
-        liquidity_info = f"${liquidity:,.0f}" if liquidity else "?"
+        token_display = f"${token_symbol} ({token_name})" if token_symbol and token_name else "Unlisted or Unknown"
+        token_addr_display = f"`{token_address}`" if token_address else "None"
+        price_display = f"${token_price:,.4f}" if token_price else "N/A"
+        liquidity_display = f"${liquidity:,.0f}" if liquidity else "N/A"
 
         msg = (
             "*Smart Whale Alert!*\n"
-            f"*Wallet:* {label}\n"
+            f"*Wallet:* `{wallet}`\n"
             f"*Tx Type:* {tx_type}\n"
             f"*Spent:* {sol_spent:.4f} SOL ({spent_usd})\n"
             f"*Wallet Balance:* {balance_fmt} SOL ({balance_usd})\n"
-            f"*Token:* ${symbol or '?'} ({token_name or 'Unknown'})\n"
-            f"*Token Address:* `{token_address}`\n"
-            f"*Price:* {price_info} | Liquidity: {liquidity_info}\n"
+            f"*Token:* {token_display}\n"
+            f"*Token Address:* {token_addr_display}\n"
+            f"*Price:* {price_display} | Liquidity: {liquidity_display}\n"
             f"[View Tx](https://solscan.io/tx/{signature})"
         )
 
@@ -111,7 +105,7 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "HaloWebhook powered by Dexscreener is live!", 200
+    return "HaloWebhook cleaned and active 🌙", 200
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8080)
