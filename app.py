@@ -8,8 +8,8 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-MIN_SOL_THRESHOLD = 0.01  # skip txs under this value
-seen_signatures = set()   # to avoid duplicates
+MIN_SOL_THRESHOLD = 0.01
+seen_signatures = set()
 
 def get_solscan_tx(signature):
     try:
@@ -66,29 +66,24 @@ def webhook():
 
         solscan_data = get_solscan_tx(signature)
         if not solscan_data:
-            print(f"⚠️ Skipped: No Solscan data for {signature}")
             continue
 
         seen_signatures.add(signature)
 
-        # Fee (amount spent in lamports)
-        fee = solscan_data.get("fee", 0) / 1_000_000_000
-        if fee < MIN_SOL_THRESHOLD:
-            print(f"⏩ Skipped low-value tx {signature} ({fee:.6f} SOL)")
+        # Native SOL amount transferred
+        native_transfer = solscan_data.get("nativeTransfers", [])
+        if not native_transfer:
             continue
 
-        # From/To
-        try:
-            instr = solscan_data["parsedInstruction"][0]
-            from_addr = instr.get("params", {}).get("source", "Unknown")
-            to_addr = instr.get("params", {}).get("destination", "Unknown")
-        except:
-            from_addr = tx.get("source", "Unknown")
-            to_addr = "Unknown"
+        amount = native_transfer[0].get("amount", 0) / 1_000_000_000
+        if amount < MIN_SOL_THRESHOLD:
+            continue
 
-        usd_value = f"${fee * sol_price:,.2f}" if sol_price else "?"
+        from_addr = native_transfer[0].get("fromUserAccount", "Unknown")
+        to_addr = native_transfer[0].get("toUserAccount", "Unknown")
+        usd_value = f"${amount * sol_price:,.2f}" if sol_price else "?"
 
-        # Token info if any
+        # Token info
         token_transfers = solscan_data.get("tokenTransfers", [])
         token_address = token_transfers[0].get("tokenAddress") if token_transfers else None
         if token_address:
@@ -96,7 +91,7 @@ def webhook():
         else:
             token_name = symbol = token_price = liquidity = None
 
-        # ✅ Decide if we have enough to send full alert
+        # Build message
         if symbol and token_name and token_price:
             token_display = f"${symbol} ({token_name})"
             token_address_display = f"`{token_address}`"
@@ -107,30 +102,29 @@ def webhook():
                 "*Smart Wallet Alert!*\n"
                 f"*From:* `{from_addr}`\n"
                 f"*To:* `{to_addr}`\n"
-                f"*Spent:* {fee:.4f} SOL ({usd_value})\n"
+                f"*Sent:* {amount:.4f} SOL ({usd_value})\n"
                 f"*Token:* {token_display}\n"
                 f"*Token Address:* {token_address_display}\n"
                 f"*Price:* {price_display} | Liquidity: {liquidity_display}\n"
                 f"[View Tx](https://solscan.io/tx/{signature})"
             )
         else:
-            # 🪙 Fallback alert — minimal transfer
             msg = (
                 "*Transfer Detected!*\n"
                 f"*From:* `{from_addr}`\n"
                 f"*To:* `{to_addr}`\n"
-                f"*Amount:* {fee:.4f} SOL ({usd_value})\n"
+                f"*Amount:* {amount:.4f} SOL ({usd_value})\n"
                 f"[View on Solscan](https://solscan.io/tx/{signature})"
             )
 
-        print(f"📤 Sending Telegram alert for tx {signature}")
+        print(f"📤 Telegram ping for {signature} | Amount: {amount:.4f} SOL")
         send_telegram(msg)
 
     return "OK", 200
 
 @app.route("/", methods=["GET"])
 def home():
-    return "🟢 HaloBot Hybrid (Solscan + Dexscreener) active!", 200
+    return "🟢 HaloBot v2 — based on SOL transferred, live and glowing!", 200
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8080)
