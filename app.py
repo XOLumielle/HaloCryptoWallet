@@ -7,28 +7,36 @@ app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+HELIUS_API_KEY = "c8903a79-6e7a-458a-ad88-0a821d92d16d"
+HELIUS_WEBHOOK_URL = "https://halocryptowallet-production.up.railway.app/webhook"
 
 MIN_SOL_THRESHOLD = 0.01
-seen_signatures = set()
 LABELS_FILE = "wallet_labels.json"
+WALLETS_FILE = "tracked_wallets.json"
+seen_signatures = set()
 
-# Load saved labels from file
-def load_labels():
-    if os.path.exists(LABELS_FILE):
-        with open(LABELS_FILE, "r") as f:
+# ---------------------------
+# Load/save JSON files
+# ---------------------------
+def load_json(path):
+    if os.path.exists(path):
+        with open(path, "r") as f:
             return json.load(f)
     return {}
 
-# Save label dictionary to file
-def save_labels(data):
-    with open(LABELS_FILE, "w") as f:
+def save_json(path, data):
+    with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
-wallet_labels = load_labels()
+wallet_labels = load_json(LABELS_FILE)
+tracked_wallets = load_json(WALLETS_FILE)
 
 def label_wallet(addr):
     return wallet_labels.get(addr, addr)
 
+# ---------------------------
+# Dexscreener Utilities
+# ---------------------------
 def get_token_info(token_address):
     try:
         url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{token_address}"
@@ -58,17 +66,108 @@ def send_telegram(message):
     }
     requests.post(url, json=payload)
 
+# ---------------------------
+# Helius Sync
+# ---------------------------
+def update_helius_webhook():
+    try:
+        webhook_id_url = f"https://api.helius.xyz/v0/webhooks?api-key={HELIUS_API_KEY}"
+        res = requests.get(webhook_id_url)
+        webhooks = res.json()
+        my_webhook = next((w for w in webhooks if w["webhookURL"] == HELIUS_WEBHOOK_URL), None)
+
+        if not my_webhook:
+            print("❌ Could not find Helius webhook ID.")
+            return
+
+        webhook_id = my_webhook["webhookID"]
+        update_url = f"https://api.helius.xyz/v0/webhooks/{webhook_id}?api-key={HELIUS_API_KEY}"
+        payload = {
+            "webhookURL": HELIUS_WEBHOOK_URL,
+            "transactionTypes": ["ALL"],
+            "accountAddresses": list(tracked_wallets.keys())
+        }
+        res = requests.put(update_url, json=payload)
+        print(f"🔄 Synced webhook with Helius: {res.status_code}")
+    except Exception as e:
+        print(f"❌ Error updating Helius: {e}")
+
+# ---------------------------
+# TELEGRAM ROUTE
+# ---------------------------
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def telegram_commands():
+    data = request.json
+    if "message" not in data:
+        return "OK", 200
+
+    text = data["message"].get("text", "").strip()
+    if not text:
+        return "OK", 200
+
+    if text.startswith("/label "):
+        parts = text.split(" ", 2)
+        if len(parts) == 3:
+            addr, name = parts[1], parts[2]
+            wallet_labels[addr] = name
+            save_json(LABELS_FILE, wallet_labels)
+            send_telegram(f"✅ Label saved: `{addr}` → *{name}*")
+        else:
+            send_telegram("❌ Usage: `/label <address> <name>`")
+
+    elif text == "/labels":
+        if wallet_labels:
+            msg = "\n".join([f"`{k}` → *{v}*" for k, v in wallet_labels.items()])
+            send_telegram(f"📒 Wallet Labels:\n{msg}")
+        else:
+            send_telegram("📭 No wallet labels yet.")
+
+    elif text.startswith("/clearlabel "):
+        parts = text.split(" ", 1)
+        addr = parts[1]
+        if addr in wallet_labels:
+            name = wallet_labels.pop(addr)
+            save_json(LABELS_FILE, wallet_labels)
+            send_telegram(f"🗑️ Removed label: `{addr}` (*{name}*)")
+        else:
+            send_telegram("❌ Label not found.")
+
+    elif text.startswith("/track "):
+        addr = text.split(" ")[1]
+        if addr in tracked_wallets:
+            send_telegram("⚠️ Already tracking that address.")
+        else:
+            tracked_wallets[addr] = True
+            save_json(WALLETS_FILE, tracked_wallets)
+            update_helius_webhook()
+            send_telegram(f"✅ Now tracking wallet:\n`{addr}`")
+
+    elif text.startswith("/untrack "):
+        addr = text.split(" ")[1]
+        if addr in tracked_wallets:
+            tracked_wallets.pop(addr)
+            save_json(WALLETS_FILE, tracked_wallets)
+            update_helius_webhook()
+            send_telegram(f"🗑️ No longer tracking:\n`{addr}`")
+        else:
+            send_telegram("❌ That wallet wasn't being tracked.")
+
+    elif text == "/tracking":
+        if tracked_wallets:
+            msg = "\n".join([f"- `{k}`" for k in tracked_wallets])
+            send_telegram(f"📍 Currently tracking:\n{msg}")
+        else:
+            send_telegram("📭 No wallets being tracked yet.")
+
+    return "OK", 200
+
+# ---------------------------
+# WEBHOOK ENDPOINT
+# ---------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
     txs = request.json
-    print("🚨 Webhook HIT")
-
-    if not txs or not isinstance(txs, list):
-        print("⚠️ Invalid webhook body")
-        return "Invalid", 400
-
     sol_price = get_sol_price()
-
     for tx in txs:
         signature = tx.get("signature")
         if not signature or signature in seen_signatures:
@@ -83,32 +182,27 @@ def webhook():
         if amount < MIN_SOL_THRESHOLD:
             continue
 
-        from_addr_raw = native[0].get("fromUserAccount", "Unknown")
-        to_addr_raw = native[0].get("toUserAccount", "Unknown")
-        from_addr = label_wallet(from_addr_raw)
-        to_addr = label_wallet(to_addr_raw)
-        usd_value = f"${amount * sol_price:,.2f}" if sol_price else "?"
+        from_raw = native[0].get("fromUserAccount", "Unknown")
+        to_raw = native[0].get("toUserAccount", "Unknown")
+        from_addr = label_wallet(from_raw)
+        to_addr = label_wallet(to_raw)
+        usd = f"${amount * sol_price:,.2f}" if sol_price else "?"
 
         token_transfers = tx.get("tokenTransfers", [])
         token_address = token_transfers[0].get("tokenAddress") if token_transfers else None
+        token_name = symbol = token_price = liquidity = None
         if token_address:
             token_name, symbol, token_price, liquidity = get_token_info(token_address)
-        else:
-            token_name = symbol = token_price = liquidity = None
 
         if symbol and token_price:
-            token_display = f"${symbol} ({token_name})"
-            token_address_display = f"`{token_address}`"
-            price_display = f"${token_price:,.4f}"
-            liquidity_display = f"${liquidity:,.0f}" if liquidity else "N/A"
             msg = (
                 "*Smart Wallet Alert!*\n"
                 f"*From:* `{from_addr}`\n"
                 f"*To:* `{to_addr}`\n"
-                f"*Sent:* {amount:.4f} SOL ({usd_value})\n"
-                f"*Token:* {token_display}\n"
-                f"*Token Address:* {token_address_display}\n"
-                f"*Price:* {price_display} | Liquidity: {liquidity_display}\n"
+                f"*Sent:* {amount:.4f} SOL ({usd})\n"
+                f"*Token:* ${symbol} ({token_name})\n"
+                f"*Token Address:* `{token_address}`\n"
+                f"*Price:* ${token_price:,.4f} | Liquidity: ${liquidity:,.0f}\n"
                 f"[View Tx](https://solscan.io/tx/{signature})"
             )
         else:
@@ -116,7 +210,7 @@ def webhook():
                 "*Transfer Detected!*\n"
                 f"*From:* `{from_addr}`\n"
                 f"*To:* `{to_addr}`\n"
-                f"*Amount:* {amount:.4f} SOL ({usd_value})\n"
+                f"*Amount:* {amount:.4f} SOL ({usd})\n"
                 f"[View on Solscan](https://solscan.io/tx/{signature})"
             )
 
@@ -124,45 +218,9 @@ def webhook():
 
     return "OK", 200
 
-@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
-def telegram_label_command():
-    data = request.json
-    if "message" not in data:
-        return "OK", 200
-
-    text = data["message"].get("text", "")
-    if text.startswith("/label"):
-        parts = text.strip().split(" ")
-        if len(parts) == 3:
-            address = parts[1]
-            name = parts[2]
-            wallet_labels[address] = name
-            save_labels(wallet_labels)
-            send_telegram(f"✅ Label saved: `{address}` → *{name}*")
-        else:
-            send_telegram("❌ Usage: `/label <address> <name>`")
-
-    elif text.strip() == "/labels":
-        if wallet_labels:
-            label_text = "\n".join([f"`{k}` → *{v}*" for k, v in wallet_labels.items()])
-            send_telegram(f"📒 Wallet Labels:\n{label_text}")
-        else:
-            send_telegram("📭 No wallet labels set yet.")
-
-    elif text.startswith("/clearlabel"):
-        parts = text.strip().split(" ")
-        if len(parts) == 2 and parts[1] in wallet_labels:
-            removed = wallet_labels.pop(parts[1])
-            save_labels(wallet_labels)
-            send_telegram(f"🗑️ Removed label for `{parts[1]}` (*{removed}*)")
-        else:
-            send_telegram("❌ Usage: `/clearlabel <address>` or address not found.")
-
-    return "OK", 200
-
 @app.route("/", methods=["GET"])
 def home():
-    return "🟢 HaloBot with Telegram wallet labels is live!", 200
+    return "🟢 HaloBot with Helius syncing + Telegram wallet tracking is live!", 200
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8080)
