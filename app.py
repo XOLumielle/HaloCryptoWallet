@@ -10,6 +10,24 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 MIN_SOL_THRESHOLD = 0.01
 seen_signatures = set()
+LABELS_FILE = "wallet_labels.json"
+
+# Load saved labels from file
+def load_labels():
+    if os.path.exists(LABELS_FILE):
+        with open(LABELS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+# Save label dictionary to file
+def save_labels(data):
+    with open(LABELS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+wallet_labels = load_labels()
+
+def label_wallet(addr):
+    return wallet_labels.get(addr, addr)
 
 def get_token_info(token_address):
     try:
@@ -38,21 +56,18 @@ def send_telegram(message):
         "text": message,
         "parse_mode": "Markdown"
     }
-    response = requests.post(url, json=payload)
-    print(f"📤 Telegram status: {response.status_code} {response.text}")
+    requests.post(url, json=payload)
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     txs = request.json
     print("🚨 Webhook HIT")
-    print(json.dumps(txs, indent=2))
 
     if not txs or not isinstance(txs, list):
         print("⚠️ Invalid webhook body")
         return "Invalid", 400
 
     sol_price = get_sol_price()
-    print(f"💰 SOL price: {sol_price if sol_price else 'Unavailable'}")
 
     for tx in txs:
         signature = tx.get("signature")
@@ -62,16 +77,16 @@ def webhook():
 
         native = tx.get("nativeTransfers", [])
         if not native:
-            print(f"⏩ No nativeTransfers for {signature}")
             continue
 
         amount = native[0].get("amount", 0) / 1_000_000_000
         if amount < MIN_SOL_THRESHOLD:
-            print(f"⏩ Skipped tx {signature} — {amount:.6f} SOL below threshold")
             continue
 
-        from_addr = native[0].get("fromUserAccount", "Unknown")
-        to_addr = native[0].get("toUserAccount", "Unknown")
+        from_addr_raw = native[0].get("fromUserAccount", "Unknown")
+        to_addr_raw = native[0].get("toUserAccount", "Unknown")
+        from_addr = label_wallet(from_addr_raw)
+        to_addr = label_wallet(to_addr_raw)
         usd_value = f"${amount * sol_price:,.2f}" if sol_price else "?"
 
         token_transfers = tx.get("tokenTransfers", [])
@@ -105,14 +120,49 @@ def webhook():
                 f"[View on Solscan](https://solscan.io/tx/{signature})"
             )
 
-        print(f"📬 Sending alert for {signature} | {amount:.4f} SOL")
         send_telegram(msg)
+
+    return "OK", 200
+
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def telegram_label_command():
+    data = request.json
+    if "message" not in data:
+        return "OK", 200
+
+    text = data["message"].get("text", "")
+    if text.startswith("/label"):
+        parts = text.strip().split(" ")
+        if len(parts) == 3:
+            address = parts[1]
+            name = parts[2]
+            wallet_labels[address] = name
+            save_labels(wallet_labels)
+            send_telegram(f"✅ Label saved: `{address}` → *{name}*")
+        else:
+            send_telegram("❌ Usage: `/label <address> <name>`")
+
+    elif text.strip() == "/labels":
+        if wallet_labels:
+            label_text = "\n".join([f"`{k}` → *{v}*" for k, v in wallet_labels.items()])
+            send_telegram(f"📒 Wallet Labels:\n{label_text}")
+        else:
+            send_telegram("📭 No wallet labels set yet.")
+
+    elif text.startswith("/clearlabel"):
+        parts = text.strip().split(" ")
+        if len(parts) == 2 and parts[1] in wallet_labels:
+            removed = wallet_labels.pop(parts[1])
+            save_labels(wallet_labels)
+            send_telegram(f"🗑️ Removed label for `{parts[1]}` (*{removed}*)")
+        else:
+            send_telegram("❌ Usage: `/clearlabel <address>` or address not found.")
 
     return "OK", 200
 
 @app.route("/", methods=["GET"])
 def home():
-    return "🟢 HaloBot is live without Solscan! Relying on Helius + Dexscreener", 200
+    return "🟢 HaloBot with Telegram wallet labels is live!", 200
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8080)
