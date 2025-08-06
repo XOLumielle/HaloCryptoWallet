@@ -8,7 +8,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Function to send messages to your Telegram
+# Function to send Telegram messages
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {
@@ -20,18 +20,19 @@ def send_telegram(message):
     response = requests.post(url, json=data)
     print(f"📬 Telegram response: {response.status_code} {response.text}")
 
-# Webhook endpoint Helius calls
+# Webhook endpoint for Helius
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
     print("🚨 Webhook HIT")
     print("📦 Incoming JSON:", data)
 
-    if not data or "transactions" not in data:
-        print("⚠️ Missing 'transactions' in payload.")
-        return "No transaction data", 400
+    # Helius sends a raw list, not a wrapped {"transactions": [...]}
+    if not data or not isinstance(data, list):
+        print("⚠️ Payload is not a transaction list.")
+        return "Invalid transaction format", 400
 
-    for txn in data["transactions"]:
+    for txn in data:
         description = txn.get("description", "Unknown activity")
         signature = txn.get("signature", "No signature")
         solscan_link = f"https://solscan.io/tx/{signature}"
@@ -41,11 +42,11 @@ def webhook():
 
     return "OK", 200
 
-# Default route for testing
+# Default route
 @app.route("/", methods=["GET"])
 def home():
-    return "🟢 HaloCryptoWallet Webhook is live and listening!", 200
+    return "🟢 HaloCryptoWallet Webhook is live and glowing!", 200
 
-# Run the app on Railway's expected port (8080)
+# Force Flask to run on Railway's required port
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8080)
