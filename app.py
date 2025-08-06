@@ -4,11 +4,9 @@ import os
 
 app = Flask(__name__)
 
-# Load your Telegram bot credentials from Railway environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Function to send messages to Telegram
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {
@@ -16,21 +14,23 @@ def send_telegram(message):
         "text": message,
         "parse_mode": "Markdown"
     }
+    print(f"Sending to Telegram: {data}")
     response = requests.post(url, json=data)
-    print("Telegram response:", response.text)
+    print(f"Telegram response: {response.status_code} {response.text}")
 
-# Main webhook route to receive POST requests from Helius
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
-    print("🔔 Webhook received:", data)
+    print("🚨 Webhook HIT")
+    print("Incoming JSON:", data)
 
     if not data or "transactions" not in data:
+        print("⚠️ Invalid or missing 'transactions' in payload")
         return "No transaction data", 400
 
     for txn in data["transactions"]:
         description = txn.get("description", "Unknown activity")
-        signature = txn.get("signature", "Unknown signature")
+        signature = txn.get("signature", "Missing signature")
         solscan_link = f"https://solscan.io/tx/{signature}"
 
         message = f"📡 *Wallet Activity Detected!*\n\n🔁 `{description}`\n🔗 [View on Solscan]({solscan_link})"
@@ -38,10 +38,9 @@ def webhook():
 
     return "OK", 200
 
-# Optional home route to show that the server is alive
 @app.route("/", methods=["GET"])
 def home():
-    return "HaloCryptoWallet Webhook is live! 🌙", 200
+    return "HaloCryptoWallet Webhook is up and glowing! 💫", 200
 
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
